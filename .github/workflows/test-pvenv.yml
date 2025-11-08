@@ -19,6 +19,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Ensure PackageManagement & NuGet
+        shell: powershell
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-Module PackageManagement -Force -AllowClobber -Scope CurrentUser
+          Install-Module PowerShellGet -Force -AllowClobber -Scope CurrentUser
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser
+
 
       - name: Install NuGet provider (CurrentUser)
         shell: powershell

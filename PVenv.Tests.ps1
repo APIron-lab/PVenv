@@ -11,14 +11,37 @@ Describe 'PVenv' {
         # 古いテスト用一時ディレクトリをクリーンアップ（自己修復）
         $oldTests = Get-ChildItem "$env:TEMP" -Directory -Filter 'PVenvTest_*' -ErrorAction SilentlyContinue
         foreach ($d in $oldTests) {
-            try {
-                Remove-Item $d.FullName -Recurse -Force -ErrorAction Stop
-            } catch {
-                # in use の可能性は無視
-            }
+            try { Remove-Item $d.FullName -Recurse -Force -ErrorAction Stop } catch {}
         }
 
+        # =========================
+        # pvenv.ps1 読み込み（CI/ローカル両対応）
+        # =========================
+        $pvenvPath = $null
+        $possiblePaths = @(
+            (Join-Path $PSScriptRoot 'pvenv.ps1'),                      # テストと同階層（CI最優先）
+            (Join-Path (Split-Path $PSScriptRoot -Parent) 'pvenv.ps1'), # 親ディレクトリ
+            '.\pvenv.ps1',                                              # 実行ディレクトリ相対
+            '..\pvenv.ps1',                                             # 1つ上
+            'C:\Tools\PVenv\pvenv.ps1'                                  # ローカル固定
+        )
+        foreach ($path in $possiblePaths) {
+            try {
+                if (Test-Path $path) {
+                    $resolved = (Resolve-Path $path -ErrorAction Stop).Path
+                    if (Test-Path $resolved) { $pvenvPath = $resolved; break }
+                }
+            } catch { continue }
+        }
+        if (-not $pvenvPath) {
+            throw "pvenv.ps1 not found. Tried: $($possiblePaths -join ', ')"
+        }
+
+        Write-Host "[Test] Loading pvenv.ps1 from: $pvenvPath" -ForegroundColor Cyan
+        . $pvenvPath
+
         # ========= Helpers (file scope) =========
+
         function Remove-DirSafe {
             param([Parameter(Mandatory)][string]$Path)
             if (Test-Path -LiteralPath $Path) {
@@ -34,11 +57,10 @@ Describe 'PVenv' {
 
         function New-DummyVenv {
             param([Parameter(Mandatory)][string]$ProjectPath)
-            $venvRoot = Join-Path $ProjectPath ".venv"
-            $scr      = Join-Path $venvRoot "Scripts"
+            $venvRoot = Join-Path $ProjectPath '.venv'
+            $scr      = Join-Path $venvRoot 'Scripts'
             New-Item -ItemType Directory -Force -Path $scr | Out-Null
 
-            # Activate.ps1
             @"
 # dummy activate
 `$env:VIRTUAL_ENV = '$venvRoot'
@@ -47,68 +69,25 @@ function global:deactivate {
     Remove-Item Function:\deactivate -ErrorAction SilentlyContinue
 }
 Write-Host "Activated: `$env:VIRTUAL_ENV"
-"@ | Set-Content -LiteralPath (Join-Path $scr "Activate.ps1") -Encoding UTF8
+"@ | Set-Content -LiteralPath (Join-Path $scr 'Activate.ps1') -Encoding UTF8
 
-            # python.exe ダミー（存在チェック用）
-            New-Item -ItemType File -Force -Path (Join-Path $scr "python.exe") | Out-Null
+            New-Item -ItemType File -Force -Path (Join-Path $scr 'python.exe') | Out-Null
         }
 
-        function Capture-HostOut-Proxy {
-            param([Parameter(Mandatory)][ScriptBlock]$Script)
-            $buffer = New-Object System.Collections.Generic.List[string]
-
-            # 既存のWrite-Hostを退避
-            $origWriteHost = $null
-            if (Get-Command Write-Host -CommandType Function -ErrorAction SilentlyContinue) {
-                $origWriteHost = Get-Command Write-Host -CommandType Function
-            }
-
-            # プロキシ関数を定義
-            $proxyDef = @'
-        param(
-            [Parameter(Position=0, ValueFromRemainingArguments=$true)]
-            $Object,
-            [ConsoleColor]$ForegroundColor,
-            [ConsoleColor]$BackgroundColor,
-            [switch]$NoNewLine
-        )
-        $line = ($Object | ForEach-Object {
-            if ($_ -is [string]) { $_ } else { $_ | Out-String }
-        }) -join ''
-        $script:__pvenv_host_buffer.Add($line) | Out-Null
-        '@
-
-            $script:__pvenv_host_buffer = $buffer
-
-            # Write-Host を安全に置き換え
-            Set-Item -Path Function:\Write-Host -Value ([ScriptBlock]::Create($proxyDef))
-
-            try {
-                & $Script *>&1 | Out-Null
-            } finally {
-                # 原状回復
-                if ($origWriteHost) {
-                    Set-Item -Path Function:\Write-Host -Value $origWriteHost.ScriptBlock
-                } else {
-                    Remove-Item Function:\Write-Host -ErrorAction SilentlyContinue
-                }
-            }
-
-            ($buffer -join [Environment]::NewLine)
-        }
-
+        # --- Write-Host を安全に取得：Transcript方式 ---
         function Capture-HostOut {
             param([Parameter(Mandatory)][ScriptBlock]$Script)
+            $log = Join-Path $env:TEMP ("PVenvTranscript_{0}.txt" -f ([guid]::NewGuid().ToString('N')))
             try {
-                $output = & $Script *>&1 | Out-String
-                if ($output) { return $output }
-            } catch {}
-            try {
-                return Capture-HostOut-Proxy -Script $Script
-            } catch {
-                Write-Warning "Capture-HostOut failed: $_"
-                return ""
+                Start-Transcript -Path $log -Force | Out-Null
+                & $Script *>&1 | Out-Null
+            } finally {
+                try { Stop-Transcript | Out-Null } catch {}
             }
+            if (Test-Path $log) {
+                try { return (Get-Content -LiteralPath $log -Raw) } catch { return "" }
+            }
+            return ""
         }
 
         function Normalize-Path {
@@ -125,32 +104,6 @@ Write-Host "Activated: `$env:VIRTUAL_ENV"
         # テスト用ルート
         $script:TestRoot = Join-Path $env:TEMP ("PVenvTest_" + [guid]::NewGuid().ToString("N"))
         New-Item -ItemType Directory -Force -Path $script:TestRoot | Out-Null
-
-        # pvenv.ps1 を読み込み（CI優先の相対パス）
-        $pvenvPath = $null
-        $possiblePaths = @(
-            ".\pvenv.ps1",
-            (Join-Path $PSScriptRoot "pvenv.ps1"),
-            "C:\Tools\PVenv\pvenv.ps1",
-            "..\pvenv.ps1"
-        )
-
-        foreach ($path in $possiblePaths) {
-            try {
-                if (Test-Path $path) {
-                    $resolved = (Resolve-Path $path -ErrorAction Stop).Path
-                    if (Test-Path $resolved) { $pvenvPath = $resolved; break }
-                }
-            } catch { continue }
-        }
-
-        if (-not $pvenvPath) {
-            $currentDir = Get-Location
-            throw "pvenv.ps1 not found. Current: $currentDir  Tried: $($possiblePaths -join ', ')"
-        }
-
-        Write-Host "[Test] Loading pvenv.ps1 from: $pvenvPath" -ForegroundColor Cyan
-        . $pvenvPath
 
         # プロジェクトルート設定
         Set-ProjectsRoot -Path $script:TestRoot | Out-Null
@@ -174,18 +127,14 @@ Write-Host "Activated: `$env:VIRTUAL_ENV"
 
         BeforeEach {
             Push-Location $script:TestRoot
-            if (Test-Path Env:\VIRTUAL_ENV) {
-                Remove-Item Env:\VIRTUAL_ENV -ErrorAction SilentlyContinue
-            }
+            if (Test-Path Env:\VIRTUAL_ENV) { Remove-Item Env:\VIRTUAL_ENV -ErrorAction SilentlyContinue }
             if (Get-Command deactivate -ErrorAction SilentlyContinue) {
                 Remove-Item Function:\deactivate -ErrorAction SilentlyContinue
             }
         }
 
         AfterEach {
-            if (Test-Path Env:\VIRTUAL_ENV) {
-                Remove-Item Env:\VIRTUAL_ENV -ErrorAction SilentlyContinue
-            }
+            if (Test-Path Env:\VIRTUAL_ENV) { Remove-Item Env:\VIRTUAL_ENV -ErrorAction SilentlyContinue }
             if (Get-Command deactivate -ErrorAction SilentlyContinue) {
                 Remove-Item Function:\deactivate -ErrorAction SilentlyContinue
             }
@@ -235,9 +184,7 @@ Write-Host "Activated: `$env:VIRTUAL_ENV"
 
         It 'spi: contains "profile" or project info in output' {
             $pA = Join-Path $script:TestRoot 'project-spi-test'
-            if (-not (Test-Path $pA)) {
-                New-Item -ItemType Directory -Force -Path $pA | Out-Null
-            }
+            if (-not (Test-Path $pA)) { New-Item -ItemType Directory -Force -Path $pA | Out-Null }
             Set-Location $pA
             $txt = Capture-HostOut { spi }
             $txt | Should -Match '\b(profile|project|path)\b'
@@ -262,15 +209,11 @@ Write-Host "Activated: `$env:VIRTUAL_ENV"
 
         BeforeEach {
             Push-Location $script:TestRoot
-            if (Test-Path Env:\VIRTUAL_ENV) {
-                Remove-Item Env:\VIRTUAL_ENV
-            }
+            if (Test-Path Env:\VIRTUAL_ENV) { Remove-Item Env:\VIRTUAL_ENV }
         }
 
         AfterEach {
-            if (Test-Path Env:\VIRTUAL_ENV) {
-                Remove-Item Env:\VIRTUAL_ENV
-            }
+            if (Test-Path Env:\VIRTUAL_ENV) { Remove-Item Env:\VIRTUAL_ENV }
             Pop-Location
         }
 

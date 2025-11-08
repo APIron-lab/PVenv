@@ -1,4 +1,4 @@
-# PVenv.Tests.ps1
+﻿# PVenv.Tests.ps1
 # Requires -Version 5.1
 $ErrorActionPreference = 'Stop'
 
@@ -39,7 +39,7 @@ function global:deactivate {
 Write-Host "Activated: `$env:VIRTUAL_ENV"
 "@ | Set-Content -LiteralPath (Join-Path $scr "Activate.ps1") -Encoding UTF8
 
-        # python.exe ダミー（存在チェック用）
+        # python.exe 繝繝溘・・亥ｭ伜惠繝√ぉ繝・け逕ｨ・・
         New-Item -ItemType File -Force -Path (Join-Path $scr "python.exe") | Out-Null
     }
 
@@ -47,13 +47,13 @@ Write-Host "Activated: `$env:VIRTUAL_ENV"
         param([Parameter(Mandatory)][ScriptBlock]$Script)
         $buffer = New-Object System.Collections.Generic.List[string]
         
-        # 既存のWrite-Hostを退避
+        # 譌｢蟄倥・Write-Host繧帝驕ｿ
         $origWriteHost = $null
         if (Get-Command Write-Host -CommandType Function -ErrorAction SilentlyContinue) {
             $origWriteHost = Get-Command Write-Host -CommandType Function
         }
         
-        # プロキシ関数を定義
+        # 繝励Ο繧ｭ繧ｷ髢｢謨ｰ繧貞ｮ夂ｾｩ
         $proxyDef = @'
 param(
     [Parameter(Position=0, ValueFromRemainingArguments=$true)]
@@ -69,16 +69,16 @@ $line = ($Object | ForEach-Object {
 $script:__pvenv_host_buffer.Add($line) | Out-Null
 '@
         
-        # バッファをスクリプトスコープに公開
+        # 繝舌ャ繝輔ぃ繧偵せ繧ｯ繝ｪ繝励ヨ繧ｹ繧ｳ繝ｼ繝励↓蜈ｬ髢・
         $script:__pvenv_host_buffer = $buffer
         
-        # Write-Hostを差し替え
+        # Write-Host繧貞ｷｮ縺玲崛縺・
         $function:Write-Host = [ScriptBlock]::Create($proxyDef)
         
         try {
             & $Script *>&1 | Out-Null
         } finally {
-            # 原状回復
+            # 蜴溽憾蝗槫ｾｩ
             if ($origWriteHost) {
                 $function:Write-Host = $origWriteHost.ScriptBlock
             } else {
@@ -92,12 +92,12 @@ $script:__pvenv_host_buffer.Add($line) | Out-Null
     function Capture-HostOut {
         param([Parameter(Mandatory)][ScriptBlock]$Script)
         try {
-            # まず通常の *>&1 でキャプチャを試す
+            # 縺ｾ縺夐壼ｸｸ縺ｮ *>&1 縺ｧ繧ｭ繝｣繝励メ繝｣繧定ｩｦ縺・
             $output = & $Script *>&1 | Out-String
             if ($output) { return $output }
         } catch {}
         
-        # フォールバック: Write-Hostプロキシ
+        # 繝輔か繝ｼ繝ｫ繝舌ャ繧ｯ: Write-Host繝励Ο繧ｭ繧ｷ
         try {
             return Capture-HostOut-Proxy -Script $Script
         } catch {
@@ -111,32 +111,32 @@ $script:__pvenv_host_buffer.Add($line) | Out-Null
         if (-not $Path) { return $Path }
         try {
             $full = [System.IO.Path]::GetFullPath($Path)
-            # 末尾の区切り文字も削除して完全に正規化
+            # 譛ｫ蟆ｾ縺ｮ蛹ｺ蛻・ｊ譁・ｭ励ｂ蜑企勁縺励※螳悟・縺ｫ豁｣隕丞喧
             return $full.TrimEnd('\', '/')
         } catch {
             return $Path
         }
     }
 
-    # テスト用ルートディレクトリ作成
+    # 繝・せ繝育畑繝ｫ繝ｼ繝医ョ繧｣繝ｬ繧ｯ繝医Μ菴懈・
     $script:TestRoot = Join-Path $env:TEMP ("PVenvTest_" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Force -Path $script:TestRoot | Out-Null
 
-    # pvenv.ps1を読み込み
+    # pvenv.ps1繧定ｪｭ縺ｿ霎ｼ縺ｿ
     $pvenvPath = "C:\Tools\PVenv\pvenv.ps1"
     if (-not (Test-Path $pvenvPath)) {
         throw "pvenv.ps1 not found at $pvenvPath"
     }
     . $pvenvPath
 
-    # プロジェクトルート設定
+    # 繝励Ο繧ｸ繧ｧ繧ｯ繝医Ν繝ｼ繝郁ｨｭ螳・
     Set-ProjectsRoot -Path $script:TestRoot | Out-Null
 }
 
 AfterAll {
     try { 
         if (Test-Path $script:TestRoot) {
-            # attribでクリーンアップ
+            # attrib縺ｧ繧ｯ繝ｪ繝ｼ繝ｳ繧｢繝・・
             attrib -r -h -s -a "$($script:TestRoot)\*.*" /s /d -ErrorAction SilentlyContinue | Out-Null
             Remove-Item -LiteralPath $script:TestRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -151,10 +151,10 @@ AfterAll {
 Describe 'PVenv basic behaviours' {
 
     BeforeEach {
-        # 初期状態に戻す
+        # 蛻晄悄迥ｶ諷九↓謌ｻ縺・
         Push-Location $script:TestRoot
         
-        # 既存のvenv環境を無効化
+        # 譌｢蟄倥・venv迺ｰ蠅・ｒ辟｡蜉ｹ蛹・
         if (Test-Path Env:\VIRTUAL_ENV) {
             Remove-Item Env:\VIRTUAL_ENV -ErrorAction SilentlyContinue
         }
@@ -164,7 +164,7 @@ Describe 'PVenv basic behaviours' {
     }
 
     AfterEach {
-        # クリーンアップ
+        # 繧ｯ繝ｪ繝ｼ繝ｳ繧｢繝・・
         if (Test-Path Env:\VIRTUAL_ENV) {
             Remove-Item Env:\VIRTUAL_ENV -ErrorAction SilentlyContinue
         }
@@ -179,13 +179,13 @@ Describe 'PVenv basic behaviours' {
         New-Item -ItemType Directory -Force -Path $pA | Out-Null
         New-DummyVenv -ProjectPath $pA
 
-        # auto モードを有効化
+        # auto 繝｢繝ｼ繝峨ｒ譛牙柑蛹・
         peauto auto | Out-Null
         
-        # ディレクトリ移動（PVenv-SetLocationが自動でアクティベート）
+        # 繝・ぅ繝ｬ繧ｯ繝医Μ遘ｻ蜍包ｼ・Venv-SetLocation縺瑚・蜍輔〒繧｢繧ｯ繝・ぅ繝吶・繝茨ｼ・
         Set-Location $pA
         
-        # 検証
+        # 讀懆ｨｼ
         $env:VIRTUAL_ENV | Should -Not -BeNullOrEmpty
         $env:VIRTUAL_ENV | Should -BeLike "*project-A*\.venv"
     }
@@ -195,7 +195,7 @@ Describe 'PVenv basic behaviours' {
         New-Item -ItemType Directory -Force -Path $pB | Out-Null
         New-DummyVenv -ProjectPath $pB
 
-        # auto モードを無効化
+        # auto 繝｢繝ｼ繝峨ｒ辟｡蜉ｹ蛹・
         peauto off | Out-Null
         
         Set-Location $pB
@@ -218,11 +218,11 @@ Describe 'PVenv basic behaviours' {
         $beforeVenv = $env:VIRTUAL_ENV
         $beforeVenv | Should -Not -BeNullOrEmpty
 
-        # 同じディレクトリで再度Refresh
+        # 蜷後§繝・ぅ繝ｬ繧ｯ繝医Μ縺ｧ蜀榊ｺｦRefresh
         PVenv-Refresh
-        $env:VIRTUAL_ENV | Should -Be $beforeVenv  # 変化なし
+        $env:VIRTUAL_ENV | Should -Be $beforeVenv  # 螟牙喧縺ｪ縺・
 
-        # ルート外へ移動（PVenv-SetLocationが自動で非アクティブ化）
+        # 繝ｫ繝ｼ繝亥､悶∈遘ｻ蜍包ｼ・Venv-SetLocation縺瑚・蜍輔〒髱槭い繧ｯ繝・ぅ繝門喧・・
         Set-Location $env:TEMP
         
         $env:VIRTUAL_ENV | Should -BeNullOrEmpty
@@ -242,7 +242,7 @@ Describe 'PVenv basic behaviours' {
         
         $txt = Capture-HostOut { spi }
         
-        # "profile" または "project" を含むことを確認
+        # "profile" 縺ｾ縺溘・ "project" 繧貞性繧縺薙→繧堤｢ｺ隱・
         $txt | Should -Match '\b(profile|project|path)\b'
     }
 
@@ -252,7 +252,7 @@ Describe 'PVenv basic behaviours' {
         
         Set-ProjectsRoot -Path $newRoot | Out-Null
         
-        # 完全正規化（短縮パス/末尾区切りの違いを吸収）
+        # 螳悟・豁｣隕丞喧・育洒邵ｮ繝代せ/譛ｫ蟆ｾ蛹ｺ蛻・ｊ縺ｮ驕輔＞繧貞精蜿趣ｼ・
         $expectedPath = Normalize-Path $newRoot
         $actualPath   = Normalize-Path $Global:PVenv.ProjectsRoot
         
@@ -293,10 +293,10 @@ Describe 'PVenv edge cases' {
 
         peauto auto | Out-Null
         
-        # 子プロジェクトへ移動
+        # 蟄舌・繝ｭ繧ｸ繧ｧ繧ｯ繝医∈遘ｻ蜍・
         Set-Location $child
         
-        # 最も近い.venvが優先されるべき
+        # 譛繧りｿ代＞.venv縺悟━蜈医＆繧後ｋ縺ｹ縺・
         $env:VIRTUAL_ENV | Should -BeLike "*child-proj*\.venv"
     }
 
@@ -304,7 +304,7 @@ Describe 'PVenv edge cases' {
         $pX = Join-Path $script:TestRoot 'broken-proj'
         New-Item -ItemType Directory -Force -Path $pX | Out-Null
         
-        # .venvは作るがScriptsは作らない
+        # .venv縺ｯ菴懊ｋ縺郡cripts縺ｯ菴懊ｉ縺ｪ縺・
         $venvDir = Join-Path $pX '.venv'
         New-Item -ItemType Directory -Force -Path $venvDir | Out-Null
         
@@ -344,7 +344,7 @@ Describe 'PVenv resource profile management' {
         
         $out = Capture-HostOut { Show-ResourceProfile }
         
-        # 基本的なプロファイル情報が含まれているか
+        # 蝓ｺ譛ｬ逧・↑繝励Ο繝輔ぃ繧､繝ｫ諠・ｱ縺悟性縺ｾ繧後※縺・ｋ縺・
         $out | Should -Match '\b(profile|Global|Project|Effective)\b'
     }
 
@@ -353,10 +353,10 @@ Describe 'PVenv resource profile management' {
         New-Item -ItemType Directory -Force -Path $pProf | Out-Null
         Set-Location $pProf
         
-        # balanced プリセットを設定
+        # balanced 繝励Μ繧ｻ繝・ヨ繧定ｨｭ螳・
         { Set-ResourceProfile -Scope Project -Profile balanced } | Should -Not -Throw
         
-        # 設定ファイルが作成されたことを確認
+        # 險ｭ螳壹ヵ繧｡繧､繝ｫ縺御ｽ懈・縺輔ｌ縺溘％縺ｨ繧堤｢ｺ隱・
         $profilePath = Join-Path $pProf '.pvenv.profile.json'
         Test-Path $profilePath | Should -Be $true
     }

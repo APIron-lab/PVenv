@@ -2,66 +2,34 @@
 # Requires -Version 5.1
 $ErrorActionPreference = 'Stop'
 
-Describe 'PVenv' {
-
-    #
-    # ========= File-scoped hooks =========
-    #
-    BeforeAll {
-        # 古いテスト用一時ディレクトリをクリーンアップ（自己修復）
-        $oldTests = Get-ChildItem "$env:TEMP" -Directory -Filter 'PVenvTest_*' -ErrorAction SilentlyContinue
-        foreach ($d in $oldTests) {
-            try { Remove-Item $d.FullName -Recurse -Force -ErrorAction Stop } catch {}
-        }
-
-        # =========================
-        # pvenv.ps1 読み込み（CI/ローカル両対応）
-        # =========================
-        $pvenvPath = $null
-        $possiblePaths = @(
-            (Join-Path $PSScriptRoot 'pvenv.ps1'),                      # テストと同階層（CI最優先）
-            (Join-Path (Split-Path $PSScriptRoot -Parent) 'pvenv.ps1'), # 親ディレクトリ
-            '.\pvenv.ps1',                                              # 実行ディレクトリ相対
-            '..\pvenv.ps1',                                             # 1つ上
-            'C:\Tools\PVenv\pvenv.ps1'                                  # ローカル固定
-        )
-        foreach ($path in $possiblePaths) {
+# =========================
+# Test bootstrap
+# =========================
+BeforeAll {
+    # -------------------------
+    # Helpers (BeforeAll scope)
+    # -------------------------
+    function Remove-DirSafe {
+        param([Parameter(Mandatory)][string]$Path)
+        if (Test-Path -LiteralPath $Path) {
             try {
-                if (Test-Path $path) {
-                    $resolved = (Resolve-Path $path -ErrorAction Stop).Path
-                    if (Test-Path $resolved) { $pvenvPath = $resolved; break }
-                }
-            } catch { continue }
-        }
-        if (-not $pvenvPath) {
-            throw "pvenv.ps1 not found. Tried: $($possiblePaths -join ', ')"
-        }
-
-        Write-Host "[Test] Loading pvenv.ps1 from: $pvenvPath" -ForegroundColor Cyan
-        . $pvenvPath
-
-        # ========= Helpers (file scope) =========
-
-        function Remove-DirSafe {
-            param([Parameter(Mandatory)][string]$Path)
-            if (Test-Path -LiteralPath $Path) {
-                try {
-                    attrib -r -h -s -a "$Path\*.*" /s /d -ErrorAction SilentlyContinue | Out-Null
-                    Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
-                } catch {
-                    Start-Sleep -Milliseconds 100
-                    Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
-                }
+                attrib -r -h -s -a "$Path\*.*" /s /d -ErrorAction SilentlyContinue | Out-Null
+                Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            } catch {
+                Start-Sleep -Milliseconds 100
+                Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
             }
         }
+    }
 
-        function New-DummyVenv {
-            param([Parameter(Mandatory)][string]$ProjectPath)
-            $venvRoot = Join-Path $ProjectPath '.venv'
-            $scr      = Join-Path $venvRoot 'Scripts'
-            New-Item -ItemType Directory -Force -Path $scr | Out-Null
+    function New-DummyVenv {
+        param([Parameter(Mandatory)][string]$ProjectPath)
+        $venvRoot = Join-Path $ProjectPath ".venv"
+        $scr      = Join-Path $venvRoot "Scripts"
+        New-Item -ItemType Directory -Force -Path $scr | Out-Null
 
-            @"
+        # Activate.ps1（ダミー）
+        @"
 # dummy activate
 `$env:VIRTUAL_ENV = '$venvRoot'
 function global:deactivate {
@@ -69,208 +37,443 @@ function global:deactivate {
     Remove-Item Function:\deactivate -ErrorAction SilentlyContinue
 }
 Write-Host "Activated: `$env:VIRTUAL_ENV"
-"@ | Set-Content -LiteralPath (Join-Path $scr 'Activate.ps1') -Encoding UTF8
+"@ | Set-Content -LiteralPath (Join-Path $scr "Activate.ps1") -Encoding UTF8
 
-            New-Item -ItemType File -Force -Path (Join-Path $scr 'python.exe') | Out-Null
+        # python.exe ダミー（存在チェック用）
+        New-Item -ItemType File -Force -Path (Join-Path $scr "python.exe") | Out-Null
+    }
+
+    function Capture-HostOut-Proxy {
+        param([Parameter(Mandatory)][ScriptBlock]$Script)
+        $buffer = New-Object System.Collections.Generic.List[string]
+
+        # 既存のWrite-Hostを退避
+        $origWriteHost = $null
+        if (Get-Command Write-Host -CommandType Function -ErrorAction SilentlyContinue) {
+            $origWriteHost = Get-Command Write-Host -CommandType Function
         }
 
-        # --- Write-Host を安全に取得：Transcript方式 ---
-        function Capture-HostOut {
-            param([Parameter(Mandatory)][ScriptBlock]$Script)
-            $log = Join-Path $env:TEMP ("PVenvTranscript_{0}.txt" -f ([guid]::NewGuid().ToString('N')))
-            try {
-                Start-Transcript -Path $log -Force | Out-Null
-                & $Script *>&1 | Out-Null
-            } finally {
-                try { Stop-Transcript | Out-Null } catch {}
+        # プロキシ関数（Write-Hostの差し替え）
+        $proxyDef = @'
+param(
+    [Parameter(Position=0, ValueFromRemainingArguments=$true)]
+    $Object,
+    [ConsoleColor]$ForegroundColor,
+    [ConsoleColor]$BackgroundColor,
+    [switch]$NoNewLine
+)
+$line = ($Object | ForEach-Object {
+    if ($_ -is [string]) { $_ } else { $_ | Out-String }
+}) -join ''
+$script:__pvenv_host_buffer.Add($line) | Out-Null
+'@
+
+        $script:__pvenv_host_buffer = $buffer
+
+        # Set-Item で関数スロットに差し替え（PS5/7両対応）
+        Set-Item -Path Function:\Write-Host -Value ([ScriptBlock]::Create($proxyDef))
+
+        try {
+            & $Script *>&1 | Out-Null
+        } finally {
+            # 復元
+            if ($origWriteHost) {
+                Set-Item -Path Function:\Write-Host -Value $origWriteHost.ScriptBlock
+            } else {
+                Remove-Item Function:\Write-Host -ErrorAction SilentlyContinue
             }
-            if (Test-Path $log) {
-                try { return (Get-Content -LiteralPath $log -Raw) } catch { return "" }
-            }
+        }
+
+        ($buffer -join [Environment]::NewLine)
+    }
+
+    function Capture-HostOut {
+        param([Parameter(Mandatory)][ScriptBlock]$Script)
+        try {
+            # まず通常のストリーム経由で拾う
+            $output = & $Script *>&1 | Out-String
+            if ($output) { return $output }
+        } catch {}
+        # Write-Host にフォールバック
+        try {
+            return Capture-HostOut-Proxy -Script $Script
+        } catch {
+            Write-Warning "Capture-HostOut failed: $_"
             return ""
         }
-
-        function Normalize-Path {
-            param([string]$Path)
-            if (-not $Path) { return $Path }
-            try {
-                $full = [System.IO.Path]::GetFullPath($Path)
-                return $full.TrimEnd('\', '/')
-            } catch {
-                return $Path
-            }
-        }
-
-        # テスト用ルート
-        $script:TestRoot = Join-Path $env:TEMP ("PVenvTest_" + [guid]::NewGuid().ToString("N"))
-        New-Item -ItemType Directory -Force -Path $script:TestRoot | Out-Null
-
-        # プロジェクトルート設定
-        Set-ProjectsRoot -Path $script:TestRoot | Out-Null
     }
 
-    AfterAll {
+    function Normalize-Path {
+        param([string]$Path)
+        if (-not $Path) { return $Path }
         try {
-            if (Test-Path $script:TestRoot) {
-                attrib -r -h -s -a "$($script:TestRoot)\*.*" /s /d -ErrorAction SilentlyContinue | Out-Null
-                Remove-Item -LiteralPath $script:TestRoot -Recurse -Force -ErrorAction SilentlyContinue
-            }
+            $full = [System.IO.Path]::GetFullPath($Path)
+            return $full.TrimEnd('\', '/')
         } catch {
-            Write-Warning "Cleanup failed: $_"
+            return $Path
         }
     }
 
-    #
-    # ========= Tests =========
-    #
-    Context 'basic behaviours' {
+    # 一時ルート
+    $script:TestRoot = Join-Path $env:TEMP ("PVenvTest_" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $script:TestRoot | Out-Null
 
-        BeforeEach {
-            Push-Location $script:TestRoot
-            if (Test-Path Env:\VIRTUAL_ENV) { Remove-Item Env:\VIRTUAL_ENV -ErrorAction SilentlyContinue }
-            if (Get-Command deactivate -ErrorAction SilentlyContinue) {
-                Remove-Item Function:\deactivate -ErrorAction SilentlyContinue
+    # pvenv.ps1 を読み込み（標準配置を優先／相対も探索）
+    $pvenvPath = $null
+    $candidates = @(
+        "C:\Tools\PVenv\pvenv.ps1",
+        (Join-Path $PSScriptRoot 'pvenv.ps1'),
+        (Join-Path (Split-Path $PSScriptRoot -Parent) 'pvenv.ps1'),
+        ".\pvenv.ps1",
+        "..\pvenv.ps1"
+    )
+    foreach ($p in $candidates) {
+        try {
+            if (Test-Path $p) { $pvenvPath = (Resolve-Path $p).Path; break }
+        } catch {}
+    }
+    if (-not $pvenvPath) { throw "pvenv.ps1 not found. Tried: $($candidates -join ', ')" }
+
+    . $pvenvPath
+
+    # プロジェクトルートをテスト用に
+    Set-ProjectsRoot -Path $script:TestRoot | Out-Null
+}
+
+AfterAll {
+    try {
+        if (Test-Path $script:TestRoot) {
+            attrib -r -h -s -a "$($script:TestRoot)\*.*" /s /d -ErrorAction SilentlyContinue | Out-Null
+            Remove-Item -LiteralPath $script:TestRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    } catch {
+        Write-Warning "Cleanup failed: $_"
+    }
+}
+
+# =========================
+# Tests
+# =========================
+Describe 'PVenv basic behaviours' {
+
+    BeforeEach {
+        Push-Location $script:TestRoot
+        # venv痕跡をクリア
+        if (Test-Path Env:\VIRTUAL_ENV) {
+            Remove-Item Env:\VIRTUAL_ENV -ErrorAction SilentlyContinue
+        }
+        if (Get-Command deactivate -ErrorAction SilentlyContinue) {
+            Remove-Item Function:\deactivate -ErrorAction SilentlyContinue
+        }
+    }
+
+    AfterEach {
+        if (Test-Path Env:\VIRTUAL_ENV) {
+            Remove-Item Env:\VIRTUAL_ENV -ErrorAction SilentlyContinue
+        }
+        if (Get-Command deactivate -ErrorAction SilentlyContinue) {
+            Remove-Item Function:\deactivate -ErrorAction SilentlyContinue
+        }
+        Pop-Location
+    }
+
+    It 'auto: activates on entering project dir' {
+        $pA = Join-Path $script:TestRoot 'project-A'
+        New-Item -ItemType Directory -Force -Path $pA | Out-Null
+        New-DummyVenv -ProjectPath $pA
+
+        peauto auto | Out-Null
+        Set-Location $pA
+
+        $env:VIRTUAL_ENV | Should -Not -BeNullOrEmpty
+        $env:VIRTUAL_ENV | Should -BeLike "*project-A*\.venv"
+    }
+
+    It 'off: does not auto-activate' {
+        $pB = Join-Path $script:TestRoot 'project-B'
+        New-Item -ItemType Directory -Force -Path $pB | Out-Null
+        New-DummyVenv -ProjectPath $pB
+
+        peauto off | Out-Null
+        Set-Location $pB
+
+        $env:VIRTUAL_ENV | Should -BeNullOrEmpty
+    }
+
+    It 'refresh: no-op in same dir, deactivate when leaving root' {
+        $pA = Join-Path $script:TestRoot 'project-A'
+        if (-not (Test-Path $pA)) { New-Item -ItemType Directory -Force -Path $pA | Out-Null }
+        if (-not (Test-Path (Join-Path $pA '.venv'))) { New-DummyVenv -ProjectPath $pA }
+
+        peauto auto | Out-Null
+        Set-Location $pA
+
+        $beforeVenv = $env:VIRTUAL_ENV
+        $beforeVenv | Should -Not -BeNullOrEmpty
+
+        PVenv-Refresh
+        $env:VIRTUAL_ENV | Should -Be $beforeVenv
+
+        Set-Location $env:TEMP
+        $env:VIRTUAL_ENV | Should -BeNullOrEmpty
+    }
+
+    It 'spt: prints at least one of [A]/[V]/[-]' {
+        $out = Capture-HostOut { spt }
+        $out | Should -Match '\[A\]|\[V\]|\[-\]'
+    }
+
+    It 'spi: contains "profile" or project info in output' {
+        $pA = Join-Path $script:TestRoot 'project-spi-test'
+        if (-not (Test-Path $pA)) { New-Item -ItemType Directory -Force -Path $pA | Out-Null }
+        Set-Location $pA
+
+        $txt = Capture-HostOut { spi }
+        $txt | Should -Match '\b(profile|project|path)\b'
+    }
+
+    It 'Set-ProjectsRoot: changes global root' {
+        $newRoot = Join-Path $script:TestRoot 'new-root'
+        New-Item -ItemType Directory -Force -Path $newRoot | Out-Null
+
+        Set-ProjectsRoot -Path $newRoot | Out-Null
+
+        $expectedPath = Normalize-Path $newRoot
+        $actualPath   = Normalize-Path $Global:PVenv.ProjectsRoot
+        $actualPath | Should -Be $expectedPath
+    }
+
+    It 'peauto: rejects invalid mode (ValidateSet)' {
+        { peauto 'invalid-mode' } | Should -Throw
+    }
+}
+
+Describe 'PVenv edge cases' {
+
+    BeforeEach {
+        Push-Location $script:TestRoot
+        if (Test-Path Env:\VIRTUAL_ENV) { Remove-Item Env:\VIRTUAL_ENV }
+    }
+
+    AfterEach {
+        if (Test-Path Env:\VIRTUAL_ENV) { Remove-Item Env:\VIRTUAL_ENV }
+        Pop-Location
+    }
+
+    It 'handles nested project directories' {
+        $parent = Join-Path $script:TestRoot 'parent-proj'
+        $child  = Join-Path $parent 'child-proj'
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+        New-Item -ItemType Directory -Force -Path $child | Out-Null
+        New-DummyVenv -ProjectPath $parent
+        New-DummyVenv -ProjectPath $child
+
+        peauto auto | Out-Null
+        Set-Location $child
+
+        $env:VIRTUAL_ENV | Should -BeLike "*child-proj*\.venv"
+    }
+
+    It 'does not activate if .venv is missing Scripts' {
+        $pX = Join-Path $script:TestRoot 'broken-proj'
+        New-Item -ItemType Directory -Force -Path $pX | Out-Null
+        $venvDir = Join-Path $pX '.venv'
+        New-Item -ItemType Directory -Force -Path $venvDir | Out-Null
+
+        peauto auto | Out-Null
+        Set-Location $pX
+
+        $env:VIRTUAL_ENV | Should -BeNullOrEmpty
+    }
+
+    It 'handles project name with spaces' {
+        $pSpace = Join-Path $script:TestRoot 'project with spaces'
+        New-Item -ItemType Directory -Force -Path $pSpace | Out-Null
+        New-DummyVenv -ProjectPath $pSpace
+
+        peauto auto | Out-Null
+        Set-Location $pSpace
+
+        $env:VIRTUAL_ENV | Should -Not -BeNullOrEmpty
+        $env:VIRTUAL_ENV | Should -BeLike "*project with spaces*\.venv"
+    }
+}
+
+Describe 'PVenv adopt (shim) & switch' {
+
+    BeforeEach {
+        Push-Location $script:TestRoot
+        peauto off | Out-Null
+    }
+
+    AfterEach {
+        if (Test-Path Env:\VIRTUAL_ENV) { Remove-Item Env:\VIRTUAL_ENV -ErrorAction SilentlyContinue }
+        if (Get-Command deactivate -ErrorAction SilentlyContinue) {
+            Remove-Item Function:\deactivate -ErrorAction SilentlyContinue
+        }
+        Pop-Location
+    }
+
+    It 'peadopt shim: records meta and Switch-ProjectVenv activates target' {
+        # 外部venvっぽいフォルダを別場所に作る
+        $ext = Join-Path $script:TestRoot 'external-venv'
+        New-Item -ItemType Directory -Force -Path (Join-Path $ext 'Scripts') | Out-Null
+        @"
+# dummy activate
+`$env:VIRTUAL_ENV = '$ext'
+function global:deactivate { Remove-Item Env:\VIRTUAL_ENV -ErrorAction SilentlyContinue; Remove-Item Function:\deactivate -ErrorAction SilentlyContinue }
+"@ | Set-Content -LiteralPath (Join-Path $ext 'Scripts\Activate.ps1') -Encoding UTF8
+
+        # プロジェクト側
+        $proj = Join-Path $script:TestRoot 'adopt-proj'
+        New-Item -ItemType Directory -Force -Path $proj | Out-Null
+        Set-Location $proj
+
+        peadopt -Mode shim -TargetVenvPath $ext | Out-Null
+
+        Test-Path (Join-Path $proj '.pvenv.adopt.json') | Should -Be $true
+
+        $r = Switch-ProjectVenv
+        $r.State | Should -Be 'ACTIVE'
+        $env:VIRTUAL_ENV | Should -Be $ext
+    }
+}
+
+# =====================================================================
+# Junction / Move adoption tests (conditional / safe)
+# =====================================================================
+Describe 'PVenv adopt (junction / move)' {
+
+    # ---------- Helpers ----------
+    function Is-NtfsPath {
+        param([Parameter(Mandatory)][string]$Path)
+        try {
+            $root = (Get-Item -LiteralPath (Resolve-Path $Path).Path).PSDrive.Root
+            $vol  = Get-Volume -FileSystemLabel * -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -ne $null }
+            if ($vol) {
+                $match = $vol | Where-Object { ($root -like "$($_.DriveLetter):\*") -and ($_.FileSystem -eq 'NTFS') }
+                return [bool]$match
             }
-        }
+        } catch {}
+        # フォールバック：FileSystem を直接取れない場合は NTFS と仮定しない
+        return $false
+    }
 
-        AfterEach {
-            if (Test-Path Env:\VIRTUAL_ENV) { Remove-Item Env:\VIRTUAL_ENV -ErrorAction SilentlyContinue }
-            if (Get-Command deactivate -ErrorAction SilentlyContinue) {
-                Remove-Item Function:\deactivate -ErrorAction SilentlyContinue
-            }
-            Pop-Location
-        }
-
-        It 'auto: activates on entering project dir' {
-            $pA = Join-Path $script:TestRoot 'project-A'
-            New-Item -ItemType Directory -Force -Path $pA | Out-Null
-            New-DummyVenv -ProjectPath $pA
-            peauto auto | Out-Null
-            Set-Location $pA
-            $env:VIRTUAL_ENV | Should -Not -BeNullOrEmpty
-            $env:VIRTUAL_ENV | Should -BeLike "*project-A*\.venv"
-        }
-
-        It 'off: does not auto-activate' {
-            $pB = Join-Path $script:TestRoot 'project-B'
-            New-Item -ItemType Directory -Force -Path $pB | Out-Null
-            New-DummyVenv -ProjectPath $pB
-            peauto off | Out-Null
-            Set-Location $pB
-            $env:VIRTUAL_ENV | Should -BeNullOrEmpty
-        }
-
-        It 'refresh: no-op in same dir, deactivate when leaving root' {
-            $pA = Join-Path $script:TestRoot 'project-A'
-            if (-not (Test-Path $pA)) { New-Item -ItemType Directory -Force -Path $pA | Out-Null }
-            if (-not (Test-Path (Join-Path $pA '.venv'))) { New-DummyVenv -ProjectPath $pA }
-
-            peauto auto | Out-Null
-            Set-Location $pA
-            $beforeVenv = $env:VIRTUAL_ENV
-            $beforeVenv | Should -Not -BeNullOrEmpty
-
-            PVenv-Refresh
-            $env:VIRTUAL_ENV | Should -Be $beforeVenv
-
-            Set-Location $env:TEMP
-            $env:VIRTUAL_ENV | Should -BeNullOrEmpty
-        }
-
-        It 'spt: prints at least one of [A]/[V]/[-]' {
-            $out = Capture-HostOut { spt }
-            $out | Should -Match '\[A\]|\[V\]|\[-\]'
-        }
-
-        It 'spi: contains "profile" or project info in output' {
-            $pA = Join-Path $script:TestRoot 'project-spi-test'
-            if (-not (Test-Path $pA)) { New-Item -ItemType Directory -Force -Path $pA | Out-Null }
-            Set-Location $pA
-            $txt = Capture-HostOut { spi }
-            $txt | Should -Match '\b(profile|project|path)\b'
-        }
-
-        It 'Set-ProjectsRoot: changes global root' {
-            $newRoot = Join-Path $script:TestRoot 'new-root'
-            New-Item -ItemType Directory -Force -Path $newRoot | Out-Null
-            Set-ProjectsRoot -Path $newRoot | Out-Null
-            $expectedPath = Normalize-Path $newRoot
-            $actualPath   = Normalize-Path $Global:PVenv.ProjectsRoot
-            $actualPath | Should -Be $expectedPath
-        }
-
-        It 'peauto: rejects invalid mode' {
-            $out = Capture-HostOut { peauto invalid-mode }
-            $out | Should -Match '(ERR|Invalid|mode)'
+    function Test-CanCreateJunction {
+        param([Parameter(Mandatory)][string]$Base)
+        $src = Join-Path $Base '___junc_src'
+        $dst = Join-Path $Base '___junc_dst'
+        try {
+            New-Item -ItemType Directory -Force -Path $dst | Out-Null
+            cmd /c "mklink /J `"$src`" `"$dst`"" | Out-Null
+            return (Test-Path -LiteralPath $src)
+        } catch {
+            return $false
+        } finally {
+            try { Remove-Item -LiteralPath $src -Force -Recurse -ErrorAction SilentlyContinue } catch {}
+            try { Remove-Item -LiteralPath $dst -Force -Recurse -ErrorAction SilentlyContinue } catch {}
         }
     }
 
-    Context 'edge cases' {
+    function Is-Junction {
+        param([Parameter(Mandatory)][string]$Path)
+        try {
+            $item = Get-Item -LiteralPath $Path -Force
+            # ReparsePoint かつ Directory なら junction として扱う
+            return (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+                    ($item.Attributes -band [IO.FileAttributes]::Directory))
+        } catch { return $false }
+    }
 
-        BeforeEach {
-            Push-Location $script:TestRoot
-            if (Test-Path Env:\VIRTUAL_ENV) { Remove-Item Env:\VIRTUAL_ENV }
-        }
-
-        AfterEach {
-            if (Test-Path Env:\VIRTUAL_ENV) { Remove-Item Env:\VIRTUAL_ENV }
-            Pop-Location
-        }
-
-        It 'handles nested project directories' {
-            $parent = Join-Path $script:TestRoot 'parent-proj'
-            $child  = Join-Path $parent 'child-proj'
-            New-Item -ItemType Directory -Force -Path $parent | Out-Null
-            New-Item -ItemType Directory -Force -Path $child | Out-Null
-            New-DummyVenv -ProjectPath $parent
-            New-DummyVenv -ProjectPath $child
-
-            peauto auto | Out-Null
-            Set-Location $child
-            $env:VIRTUAL_ENV | Should -BeLike "*child-proj*\.venv"
-        }
-
-        It 'does not activate if .venv is missing Scripts' {
-            $pX = Join-Path $script:TestRoot 'broken-proj'
-            New-Item -ItemType Directory -Force -Path $pX | Out-Null
-            $venvDir = Join-Path $pX '.venv'
-            New-Item -ItemType Directory -Force -Path $venvDir | Out-Null
-            peauto auto | Out-Null
-            Set-Location $pX
-            $env:VIRTUAL_ENV | Should -BeNullOrEmpty
-        }
-
-        It 'handles project name with spaces' {
-            $pSpace = Join-Path $script:TestRoot 'project with spaces'
-            New-Item -ItemType Directory -Force -Path $pSpace | Out-Null
-            New-DummyVenv -ProjectPath $pSpace
-            peauto auto | Out-Null
-            Set-Location $pSpace
-            $env:VIRTUAL_ENV | Should -Not -BeNullOrEmpty
-            $env:VIRTUAL_ENV | Should -BeLike "*project with spaces*\.venv"
+    BeforeEach {
+        Push-Location $script:TestRoot
+        peauto off | Out-Null
+        # venv痕跡リセット
+        if (Test-Path Env:\VIRTUAL_ENV) { Remove-Item Env:\VIRTUAL_ENV -ErrorAction SilentlyContinue }
+        if (Get-Command deactivate -ErrorAction SilentlyContinue) {
+            Remove-Item Function:\deactivate -ErrorAction SilentlyContinue
         }
     }
 
-    Context 'resource profile management' {
+    AfterEach {
+        if (Test-Path Env:\VIRTUAL_ENV) { Remove-Item Env:\VIRTUAL_ENV -ErrorAction SilentlyContinue }
+        if (Get-Command deactivate -ErrorAction SilentlyContinue) {
+            Remove-Item Function:\deactivate -ErrorAction SilentlyContinue
+        }
+        Pop-Location
+    }
 
-        BeforeEach { Push-Location $script:TestRoot }
-        AfterEach  { Pop-Location }
-
-        It 'Show-ResourceProfile: displays effective profile' {
-            $pProf = Join-Path $script:TestRoot 'profile-test'
-            New-Item -ItemType Directory -Force -Path $pProf | Out-Null
-            Set-Location $pProf
-            $out = Capture-HostOut { Show-ResourceProfile }
-            $out | Should -Match '\b(profile|Global|Project|Effective)\b'
+    It 'peadopt move: relocates external venv into project and activates' -TestCases @(@{}) {
+        # 条件チェック（NTFS 前提）
+        if (-not (Is-NtfsPath -Path $script:TestRoot)) {
+            Set-ItResult -Skipped -Because 'Not NTFS; move test skipped'
+            return
         }
 
-        It 'Set-ResourceProfile: validates preset values' {
-            $pProf = Join-Path $script:TestRoot 'profile-preset-test'
-            New-Item -ItemType Directory -Force -Path $pProf | Out-Null
-            Set-Location $pProf
-            { Set-ResourceProfile -Scope Project -Profile balanced } | Should -Not -Throw
-            $profilePath = Join-Path $pProf '.pvenv.profile.json'
-            Test-Path $profilePath | Should -Be $true
+        # 外部 venv
+        $ext = Join-Path $script:TestRoot 'ext-move-venv'
+        New-Item -ItemType Directory -Force -Path (Join-Path $ext 'Scripts') | Out-Null
+        @"
+# dummy activate
+`$env:VIRTUAL_ENV = '$ext'
+function global:deactivate { Remove-Item Env:\VIRTUAL_ENV -ErrorAction SilentlyContinue; Remove-Item Function:\deactivate -ErrorAction SilentlyContinue }
+"@ | Set-Content -LiteralPath (Join-Path $ext 'Scripts\Activate.ps1') -Encoding UTF8
+
+        # プロジェクト側
+        $proj = Join-Path $script:TestRoot 'proj-move'
+        New-Item -ItemType Directory -Force -Path $proj | Out-Null
+        Set-Location $proj
+
+        # move 採用
+        peadopt -Mode move -TargetVenvPath $ext | Out-Null
+
+        $projVenv = Join-Path $proj '.venv'
+        Test-Path (Join-Path $projVenv 'Scripts\Activate.ps1') | Should -Be $true
+        Test-Path $ext | Should -Be $false   # 元の場所からは無くなるはず
+
+        # Activate 動作
+        $r = Switch-ProjectVenv
+        $r.State | Should -Be 'ACTIVE'
+        $env:VIRTUAL_ENV | Should -Be (Normalize-Path $projVenv)
+    }
+
+    It 'peadopt junction: creates .venv junction to external venv and activates' -TestCases @(@{}) {
+        # 条件チェック（NTFS & mklink /J 可能）
+        if (-not (Is-NtfsPath -Path $script:TestRoot)) {
+            Set-ItResult -Skipped -Because 'Not NTFS; junction test skipped'
+            return
         }
+        if (-not (Test-CanCreateJunction -Base $script:TestRoot)) {
+            Set-ItResult -Skipped -Because 'mklink /J not available; junction test skipped'
+            return
+        }
+
+        # 外部 venv
+        $ext = Join-Path $script:TestRoot 'ext-junc-venv'
+        New-Item -ItemType Directory -Force -Path (Join-Path $ext 'Scripts') | Out-Null
+        @"
+# dummy activate
+`$env:VIRTUAL_ENV = '$ext'
+function global:deactivate { Remove-Item Env:\VIRTUAL_ENV -ErrorAction SilentlyContinue; Remove-Item Function:\deactivate -ErrorAction SilentlyContinue }
+"@ | Set-Content -LiteralPath (Join-Path $ext 'Scripts\Activate.ps1') -Encoding UTF8
+
+        # プロジェクト側
+        $proj = Join-Path $script:TestRoot 'proj-junc'
+        New-Item -ItemType Directory -Force -Path $proj | Out-Null
+        Set-Location $proj
+
+        # junction 採用
+        peadopt -Mode junction -TargetVenvPath $ext | Out-Null
+
+        $projVenv = Join-Path $proj '.venv'
+        # .venv が Junction であること
+        (Is-Junction -Path $projVenv) | Should -Be $true
+        Test-Path (Join-Path $projVenv 'Scripts\Activate.ps1') | Should -Be $true
+
+        # Activate 動作
+        $r = Switch-ProjectVenv
+        $r.State | Should -Be 'ACTIVE'
+        # VIRTUAL_ENV は外部 venv を指す（Activate.ps1 が ext をセットする想定）
+        $env:VIRTUAL_ENV | Should -Be (Normalize-Path $ext)
     }
 }

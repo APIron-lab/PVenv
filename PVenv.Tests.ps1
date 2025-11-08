@@ -63,33 +63,32 @@ Write-Host "Activated: `$env:VIRTUAL_ENV"
                 $origWriteHost = Get-Command Write-Host -CommandType Function
             }
 
-            # プロキシ関数
+            # プロキシ関数を定義
             $proxyDef = @'
-param(
-    [Parameter(Position=0, ValueFromRemainingArguments=$true)]
-    $Object,
-    [ConsoleColor]$ForegroundColor,
-    [ConsoleColor]$BackgroundColor,
-    [switch]$NoNewLine
-)
-$line = ($Object | ForEach-Object {
-    if ($_ -is [string]) { $_ }
-    else { $_ | Out-String }
-}) -join ''
-$script:__pvenv_host_buffer.Add($line) | Out-Null
-'@
+        param(
+            [Parameter(Position=0, ValueFromRemainingArguments=$true)]
+            $Object,
+            [ConsoleColor]$ForegroundColor,
+            [ConsoleColor]$BackgroundColor,
+            [switch]$NoNewLine
+        )
+        $line = ($Object | ForEach-Object {
+            if ($_ -is [string]) { $_ } else { $_ | Out-String }
+        }) -join ''
+        $script:__pvenv_host_buffer.Add($line) | Out-Null
+        '@
 
-            # バッファ共有
             $script:__pvenv_host_buffer = $buffer
 
-            # 差し替え
-            $function:Write-Host = [ScriptBlock]::Create($proxyDef)
+            # Write-Host を安全に置き換え
+            Set-Item -Path Function:\Write-Host -Value ([ScriptBlock]::Create($proxyDef))
 
             try {
                 & $Script *>&1 | Out-Null
             } finally {
+                # 原状回復
                 if ($origWriteHost) {
-                    $function:Write-Host = $origWriteHost.ScriptBlock
+                    Set-Item -Path Function:\Write-Host -Value $origWriteHost.ScriptBlock
                 } else {
                     Remove-Item Function:\Write-Host -ErrorAction SilentlyContinue
                 }

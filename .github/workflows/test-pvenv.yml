@@ -7,8 +7,10 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+# CodecovのPRコメント等を許可（必要に応じて）
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   test-ps51:
@@ -19,19 +21,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Ensure PackageManagement & NuGet
+
+      # PS 5.1 ではNuGetプロバイダが必要になることがあるため準備
+      - name: Ensure PowerShellGet / PackageManagement / NuGet
         shell: powershell
         run: |
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-          Install-Module PackageManagement -Force -AllowClobber -Scope CurrentUser
-          Install-Module PowerShellGet -Force -AllowClobber -Scope CurrentUser
-          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser
-
-
-      - name: Install NuGet provider (CurrentUser)
-        shell: powershell
-        run: |
-          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted
+          Install-Module PackageManagement -Scope CurrentUser -Force -AllowClobber
+          Install-Module PowerShellGet     -Scope CurrentUser -Force -AllowClobber
           Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser
 
       - name: Install Pester 5.x (CurrentUser)
@@ -49,7 +47,7 @@ jobs:
         run: |
           Import-Module Pester -Force
           $cfg = New-PesterConfiguration
-          $cfg.Run.Path = 'PVenv.Tests.ps1'
+          $cfg.Run.Path = '.\PVenv.Tests.ps1'
           $cfg.Output.Verbosity = 'Detailed'
           $cfg.Run.Exit = $true
           Invoke-Pester -Configuration $cfg
@@ -60,7 +58,7 @@ jobs:
         run: |
           Import-Module Pester -Force
           $cfg = New-PesterConfiguration
-          $cfg.Run.Path = 'PVenv.Tests.ps1'
+          $cfg.Run.Path = '.\PVenv.Tests.ps1'
           $cfg.TestResult.Enabled = $true
           $cfg.TestResult.OutputFormat = 'JUnitXml'
           $cfg.TestResult.OutputPath = "TestResults_PS51.xml"
@@ -82,15 +80,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Install NuGet provider (CurrentUser)
-        shell: pwsh
-        run: |
-          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser
-
+      # PS 7.x ではNuGetプロバイダは不要。Pesterのみ導入。
       - name: Install Pester 5.x (CurrentUser)
         shell: pwsh
         run: |
+          Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted
           Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck -MinimumVersion 5.0
           Import-Module Pester -MinimumVersion 5.0 -Force
 
@@ -103,7 +100,7 @@ jobs:
         run: |
           Import-Module Pester -Force
           $cfg = New-PesterConfiguration
-          $cfg.Run.Path = 'PVenv.Tests.ps1'
+          $cfg.Run.Path = '.\PVenv.Tests.ps1'
           $cfg.Output.Verbosity = 'Detailed'
           $cfg.Run.Exit = $true
           Invoke-Pester -Configuration $cfg
@@ -114,7 +111,7 @@ jobs:
         run: |
           Import-Module Pester -Force
           $cfg = New-PesterConfiguration
-          $cfg.Run.Path = 'PVenv.Tests.ps1'
+          $cfg.Run.Path = '.\PVenv.Tests.ps1'
           $cfg.TestResult.Enabled = $true
           $cfg.TestResult.OutputFormat = 'JUnitXml'
           $cfg.TestResult.OutputPath = "TestResults_PS74.xml"
@@ -138,10 +135,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Install Pester
+      - name: Install Pester (PS 5.1)
         shell: powershell
         run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted
           Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser
           Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck -MinimumVersion 5.0
           Import-Module Pester -Force
@@ -151,9 +152,9 @@ jobs:
         run: |
           Import-Module Pester -Force
           $cfg = New-PesterConfiguration
-          $cfg.Run.Path = 'PVenv.Tests.ps1'
+          $cfg.Run.Path = '.\PVenv.Tests.ps1'
           $cfg.CodeCoverage.Enabled = $true
-          $cfg.CodeCoverage.Path = 'pvenv.ps1'
+          $cfg.CodeCoverage.Path = '.\pvenv.ps1'
           $cfg.CodeCoverage.OutputFormat = 'JaCoCo'
           $cfg.CodeCoverage.OutputPath = 'coverage.xml'
           $cfg.Output.Verbosity = 'Normal'
@@ -161,7 +162,7 @@ jobs:
           
           if ($result.CodeCoverage) {
             $covered = $result.CodeCoverage.CoveredCommands.Count
-            $total = $result.CodeCoverage.CommandsAnalyzed.Count
+            $total   = $result.CodeCoverage.CommandsAnalyzed.Count
             if ($total -gt 0) {
               $percent = [math]::Round(($covered / $total) * 100, 2)
               Write-Host "Coverage: $percent% ($covered/$total commands)"

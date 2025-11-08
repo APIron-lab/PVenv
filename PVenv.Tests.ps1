@@ -123,9 +123,11 @@ $script:__pvenv_host_buffer.Add($line) | Out-Null
     New-Item -ItemType Directory -Force -Path $script:TestRoot | Out-Null
 
     # pvenv.ps1繧定ｪｭ縺ｿ霎ｼ縺ｿ
-    $pvenvPath = "C:\Tools\PVenv\pvenv.ps1"
-    if (-not (Test-Path $pvenvPath)) {
-        throw "pvenv.ps1 not found at $pvenvPath"
+    $repoPath  = Join-Path $PSScriptRoot 'pvenv.ps1'
+    $localPath = 'C:\Tools\PVenv\pvenv.ps1'
+    $pvenvPath = @($repoPath, $localPath) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $pvenvPath) {
+        throw "pvenv.ps1 not found. Searched: `"$repoPath`", `"$localPath`""
     }
     . $pvenvPath
 

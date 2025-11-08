@@ -9,88 +9,56 @@ on:
 
 jobs:
   test:
-    name: Pester on Windows (PS ${{ matrix.psver }})
+    name: Pester on Windows (${{ matrix.psname }})
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        psver: ["5.1", "7.4"]
+        include:
+          - psname: "PS 5.1"
+            shell: powershell
+          - psname: "PS 7.4"
+            shell: pwsh
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # PS 7.x を使うときだけセットアップ
-      - name: Setup PowerShell ${{ matrix.psver }}
-        if: ${{ matrix.psver != '5.1' }}
-        uses: actions/setup-powershell@v2
-        with:
-          pwsh-version: ${{ matrix.psver }}
-
       - name: Install NuGet provider (CurrentUser)
-        shell: powershell
+        shell: ${{ matrix.shell }}
         run: |
           Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser
 
       - name: Install Pester 5.x (CurrentUser)
-        shell: powershell
+        shell: ${{ matrix.shell }}
         run: |
           Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck -MinimumVersion 5.0
+          Import-Module Pester -MinimumVersion 5.0 -Force
 
       - name: Set execution policy (Process)
-        shell: powershell
+        shell: ${{ matrix.shell }}
         run: Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 
-      # --- Run tests (PS 5.1) ---
-      - name: Run tests (PS 5.1)
-        if: matrix.psver == '5.1'
-        shell: powershell
+      - name: Run tests (${{ matrix.psname }})
+        shell: ${{ matrix.shell }}
         run: |
-          Import-Module Pester -MinimumVersion 5.0 -Force
+          Import-Module Pester -Force
           $cfg = New-PesterConfiguration
-          $cfg.Run.Path = 'PVenv.Tests.ps1'
+          $cfg.Run.Path = 'PVenv.Tests.ps1'            # ← 相対パス（リポジトリ内）
           $cfg.Output.Verbosity = 'Detailed'
           $cfg.Run.Exit = $true
           Invoke-Pester -Configuration $cfg
 
-      # --- Run tests (PS 7.4) ---
-      - name: Run tests (PS 7.4)
-        if: matrix.psver != '5.1'
-        shell: pwsh
-        run: |
-          Import-Module Pester -MinimumVersion 5.0 -Force
-          $cfg = New-PesterConfiguration
-          $cfg.Run.Path = 'PVenv.Tests.ps1'
-          $cfg.Output.Verbosity = 'Detailed'
-          $cfg.Run.Exit = $true
-          Invoke-Pester -Configuration $cfg
-
-      # --- JUnit 出力（5.1）---
-      - name: Generate Test Results (JUnit, PS 5.1)
-        if: always() && matrix.psver == '5.1'
-        shell: powershell
+      - name: Generate Test Results (JUnit)
+        if: always()
+        shell: ${{ matrix.shell }}
         run: |
           Import-Module Pester -Force
           $cfg = New-PesterConfiguration
           $cfg.Run.Path = 'PVenv.Tests.ps1'
           $cfg.TestResult.Enabled = $true
           $cfg.TestResult.OutputFormat = 'JUnitXml'
-          $cfg.TestResult.OutputPath = "TestResults_${{ matrix.psver }}.xml"
-          $cfg.Output.Verbosity = 'Normal'
-          try { Invoke-Pester -Configuration $cfg } catch { Write-Warning $_ }
-        continue-on-error: true
-
-      # --- JUnit 出力（7.4）---
-      - name: Generate Test Results (JUnit, PS 7.4)
-        if: always() && matrix.psver != '5.1'
-        shell: pwsh
-        run: |
-          Import-Module Pester -Force
-          $cfg = New-PesterConfiguration
-          $cfg.Run.Path = 'PVenv.Tests.ps1'
-          $cfg.TestResult.Enabled = $true
-          $cfg.TestResult.OutputFormat = 'JUnitXml'
-          $cfg.TestResult.OutputPath = "TestResults_${{ matrix.psver }}.xml"
+          $cfg.TestResult.OutputPath = "TestResults_${{ matrix.psname }}.xml"
           $cfg.Output.Verbosity = 'Normal'
           try { Invoke-Pester -Configuration $cfg } catch { Write-Warning $_ }
         continue-on-error: true
@@ -99,29 +67,26 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pester-results-ps${{ matrix.psver }}
-          path: TestResults_${{ matrix.psver }}.xml
+          name: pester-results-${{ matrix.psname }}
+          path: TestResults_${{ matrix.psname }}.xml
           if-no-files-found: ignore
 
   coverage:
     name: Code Coverage (PS 5.1)
     runs-on: windows-latest
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install NuGet provider
+      - name: Install Pester
         shell: powershell
         run: |
           Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser
-
-      - name: Install Pester 5.x
-        shell: powershell
-        run: |
           Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck -MinimumVersion 5.0
+          Import-Module Pester -Force
 
       - name: Run tests with coverage (JaCoCo)
         shell: powershell
@@ -130,25 +95,15 @@ jobs:
           $cfg = New-PesterConfiguration
           $cfg.Run.Path = 'PVenv.Tests.ps1'
           $cfg.CodeCoverage.Enabled = $true
-          $cfg.CodeCoverage.Path = 'pvenv.ps1'
+          $cfg.CodeCoverage.Path = 'pvenv.ps1'          # ← 対象スクリプト（相対パス）
           $cfg.CodeCoverage.OutputFormat = 'JaCoCo'
           $cfg.CodeCoverage.OutputPath = 'coverage.xml'
           $cfg.Output.Verbosity = 'Normal'
           Invoke-Pester -Configuration $cfg
 
-      - name: Upload Coverage Report (artifact)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: coverage.xml
-          if-no-files-found: error
-
       - name: Upload to Codecov
-        if: always()
         uses: codecov/codecov-action@v4
         with:
           files: coverage.xml
-          token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: true
-          flags: powershell-5_1
+          token: ${{ secrets.CODECOV_TOKEN }}

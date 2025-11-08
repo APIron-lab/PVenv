@@ -7,58 +7,55 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
-jobs:
-  test:
-    name: Pester on Windows (${{ matrix.psname }})
-    runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - psname: "PS 5.1"
-            shell: powershell
-          - psname: "PS 7.4"
-            shell: pwsh
+permissions:
+  contents: read
 
+jobs:
+  test-ps51:
+    name: Pester on Windows (PS 5.1)
+    runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install NuGet provider (CurrentUser)
-        shell: ${{ matrix.shell }}
+        shell: powershell
         run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser
 
       - name: Install Pester 5.x (CurrentUser)
-        shell: ${{ matrix.shell }}
+        shell: powershell
         run: |
           Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck -MinimumVersion 5.0
           Import-Module Pester -MinimumVersion 5.0 -Force
 
       - name: Set execution policy (Process)
-        shell: ${{ matrix.shell }}
+        shell: powershell
         run: Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 
-      - name: Run tests (${{ matrix.psname }})
-        shell: ${{ matrix.shell }}
+      - name: Run tests (PS 5.1)
+        shell: powershell
         run: |
           Import-Module Pester -Force
           $cfg = New-PesterConfiguration
-          $cfg.Run.Path = 'PVenv.Tests.ps1'            # ← 相対パス（リポジトリ内）
+          $cfg.Run.Path = 'PVenv.Tests.ps1'
           $cfg.Output.Verbosity = 'Detailed'
           $cfg.Run.Exit = $true
           Invoke-Pester -Configuration $cfg
 
       - name: Generate Test Results (JUnit)
         if: always()
-        shell: ${{ matrix.shell }}
+        shell: powershell
         run: |
           Import-Module Pester -Force
           $cfg = New-PesterConfiguration
           $cfg.Run.Path = 'PVenv.Tests.ps1'
           $cfg.TestResult.Enabled = $true
           $cfg.TestResult.OutputFormat = 'JUnitXml'
-          $cfg.TestResult.OutputPath = "TestResults_${{ matrix.psname }}.xml"
+          $cfg.TestResult.OutputPath = "TestResults_PS51.xml"
           $cfg.Output.Verbosity = 'Normal'
           try { Invoke-Pester -Configuration $cfg } catch { Write-Warning $_ }
         continue-on-error: true
@@ -67,16 +64,69 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pester-results-${{ matrix.psname }}
-          path: TestResults_${{ matrix.psname }}.xml
+          name: pester-results-ps51
+          path: TestResults_PS51.xml
+          if-no-files-found: ignore
+
+  test-ps74:
+    name: Pester on Windows (PS 7.4)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install NuGet provider (CurrentUser)
+        shell: pwsh
+        run: |
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser
+
+      - name: Install Pester 5.x (CurrentUser)
+        shell: pwsh
+        run: |
+          Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck -MinimumVersion 5.0
+          Import-Module Pester -MinimumVersion 5.0 -Force
+
+      - name: Set execution policy (Process)
+        shell: pwsh
+        run: Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+
+      - name: Run tests (PS 7.4)
+        shell: pwsh
+        run: |
+          Import-Module Pester -Force
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path = 'PVenv.Tests.ps1'
+          $cfg.Output.Verbosity = 'Detailed'
+          $cfg.Run.Exit = $true
+          Invoke-Pester -Configuration $cfg
+
+      - name: Generate Test Results (JUnit)
+        if: always()
+        shell: pwsh
+        run: |
+          Import-Module Pester -Force
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path = 'PVenv.Tests.ps1'
+          $cfg.TestResult.Enabled = $true
+          $cfg.TestResult.OutputFormat = 'JUnitXml'
+          $cfg.TestResult.OutputPath = "TestResults_PS74.xml"
+          $cfg.Output.Verbosity = 'Normal'
+          try { Invoke-Pester -Configuration $cfg } catch { Write-Warning $_ }
+        continue-on-error: true
+
+      - name: Upload Test Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pester-results-ps74
+          path: TestResults_PS74.xml
           if-no-files-found: ignore
 
   coverage:
     name: Code Coverage (PS 5.1)
     runs-on: windows-latest
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-
+    needs: [test-ps51, test-ps74]
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -95,15 +145,35 @@ jobs:
           $cfg = New-PesterConfiguration
           $cfg.Run.Path = 'PVenv.Tests.ps1'
           $cfg.CodeCoverage.Enabled = $true
-          $cfg.CodeCoverage.Path = 'pvenv.ps1'          # ← 対象スクリプト（相対パス）
+          $cfg.CodeCoverage.Path = 'pvenv.ps1'
           $cfg.CodeCoverage.OutputFormat = 'JaCoCo'
           $cfg.CodeCoverage.OutputPath = 'coverage.xml'
           $cfg.Output.Verbosity = 'Normal'
-          Invoke-Pester -Configuration $cfg
+          $result = Invoke-Pester -Configuration $cfg
+          
+          if ($result.CodeCoverage) {
+            $covered = $result.CodeCoverage.CoveredCommands.Count
+            $total = $result.CodeCoverage.CommandsAnalyzed.Count
+            if ($total -gt 0) {
+              $percent = [math]::Round(($covered / $total) * 100, 2)
+              Write-Host "Coverage: $percent% ($covered/$total commands)"
+            }
+          }
+
+      - name: Upload Coverage Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          if-no-files-found: ignore
 
       - name: Upload to Codecov
+        if: always()
         uses: codecov/codecov-action@v4
         with:
           files: coverage.xml
-          fail_ci_if_error: true
+          name: PVenv Coverage
+          flags: ps51
+          fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}

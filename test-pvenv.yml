@@ -1,0 +1,130 @@
+name: PVenv CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Pester on Windows (PS ${{ matrix.psver }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        psver: [ "5.1", "7.4" ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PowerShell 7.x
+        if: ${{ matrix.psver != '5.1' }}
+        uses: PowerShell/PowerShell@v1
+        with:
+          version: ${{ matrix.psver }}
+
+      - name: Install NuGet provider (CurrentUser)
+        shell: powershell
+        run: |
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser
+
+      - name: Install Pester 5.x (CurrentUser)
+        shell: powershell
+        run: |
+          Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck -MinimumVersion 5.0
+          Import-Module Pester -MinimumVersion 5.0 -Force
+
+      - name: Set execution policy (Process)
+        shell: powershell
+        run: Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+
+      - name: Run tests (PS ${{ matrix.psver }})
+        shell: ${{ matrix.psver == '5.1' && 'powershell' || 'pwsh' }}
+        run: |
+          Import-Module Pester -Force
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path = 'C:\Tools\PVenv\PVenv.Tests.ps1'
+          $cfg.Output.Verbosity = 'Detailed'
+          $cfg.Run.Exit = $true
+          Invoke-Pester -Configuration $cfg
+
+      - name: Generate Test Results (JUnit)
+        if: always()
+        shell: ${{ matrix.psver == '5.1' && 'powershell' || 'pwsh' }}
+        run: |
+          Import-Module Pester -Force
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path = 'C:\Tools\PVenv\PVenv.Tests.ps1'
+          $cfg.TestResult.Enabled = $true
+          $cfg.TestResult.OutputFormat = 'JUnitXml'
+          $cfg.TestResult.OutputPath = "TestResults_${{ matrix.psver }}.xml"
+          $cfg.Output.Verbosity = 'Normal'
+          $cfg.Run.PassThru = $true
+          try { 
+            $result = Invoke-Pester -Configuration $cfg 
+            Write-Host "Tests: $($result.TotalCount), Passed: $($result.PassedCount), Failed: $($result.FailedCount)"
+          } catch {
+            Write-Warning "Test result generation failed: $_"
+          }
+        continue-on-error: true
+
+      - name: Upload Test Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pester-results-ps${{ matrix.psver }}
+          path: |
+            TestResults_${{ matrix.psver }}.xml
+          if-no-files-found: ignore
+
+  coverage:
+    name: Code Coverage (PS 5.1)
+    runs-on: windows-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install NuGet provider
+        shell: powershell
+        run: |
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser
+
+      - name: Install Pester 5.x
+        shell: powershell
+        run: |
+          Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck -MinimumVersion 5.0
+          Import-Module Pester -Force
+
+      - name: Run tests with coverage
+        shell: powershell
+        run: |
+          Import-Module Pester -Force
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path = 'C:\Tools\PVenv\PVenv.Tests.ps1'
+          $cfg.CodeCoverage.Enabled = $true
+          $cfg.CodeCoverage.Path = 'C:\Tools\PVenv\pvenv.ps1'
+          $cfg.CodeCoverage.OutputFormat = 'JaCoCo'
+          $cfg.CodeCoverage.OutputPath = 'coverage.xml'
+          $cfg.Output.Verbosity = 'Normal'
+          $result = Invoke-Pester -Configuration $cfg
+          
+          if ($result.CodeCoverage) {
+            $covered = $result.CodeCoverage.CoveredLines.Count
+            $total = $result.CodeCoverage.AnalyzedLines.Count
+            $percent = [math]::Round(($covered / $total) * 100, 2)
+            Write-Host "Coverage: $percent% ($covered/$total lines)"
+          }
+
+      - name: Upload Coverage Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          if-no-files-found: ignore

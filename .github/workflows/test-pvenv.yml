@@ -22,10 +22,10 @@ jobs:
 
       # PS 7.x を使うときだけセットアップ
       - name: Setup PowerShell ${{ matrix.psver }}
-        if: matrix.psver != '5.1'
-        uses: PowerShell/PowerShell@v1
+        if: ${{ matrix.psver != '5.1' }}
+        uses: actions/setup-powershell@v2
         with:
-          version: ${{ matrix.psver }}
+          pwsh-version: ${{ matrix.psver }}
 
       - name: Install NuGet provider (CurrentUser)
         shell: powershell

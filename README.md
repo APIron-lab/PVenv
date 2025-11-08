@@ -38,7 +38,9 @@ spi
 # リソースプロファイル設定
 srp -Scope Project -Profile balanced
 
-🧪 開発・テスト
+```
+
+## 🧪 開発・テスト
 
 ローカルでテストする場合：
 
@@ -53,7 +55,9 @@ JaCoCo形式のカバレッジレポート生成
 
 Codecovへ自動アップロード
 
-🧩 導入方法
+---
+
+## 🧩 導入方法
 
 PVenvスクリプトを配置（例：C:\Tools\PVenv\pvenv.ps1）
 
@@ -64,12 +68,17 @@ PowerShellプロファイルへ以下を追加：
 
 PowerShellを再起動して完了！
 
-📊 開発状況
-項目状態
-✅ テスト自動化完了
-✅ カバレッジ可視化Codecov連携済み
-🔄 Junction/Adopt 機能実装予定
-🧩 CLI改善検討中
+---
+
+## 📊 開発状況
+| 項目 | 状態 |
+|------|------|
+| ✅ テスト自動化 | 完了 |
+| ✅ カバレッジ可視化 | Codecov連携済み |
+| 🔄 Junction / Adopt 機能 | 実装予定 |
+| 🧩 CLI改善 | 検討中 |
+
+---
 
 Author: APIron-lab
 License: MIT
